@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.3.0] — 2026-04-23
+
+### Features
+- `9b495a3` feat(copilot-extension): add mock mode and test script
+
+**Full diff**: https://github.com/valentinarodrigues/ship/compare/v0.2.0...v0.3.0
+
+---
+
+
 ## [v0.2.0] — 2026-04-23
 
 ### Features
