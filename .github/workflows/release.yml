@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    name: Version, Changelog & GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git bot identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute next version and generate changelog
+        id: versioning
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # ── Gather commits since last tag ──────────────────────────────────
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+          if [ -z "$LATEST_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"%H %s")
+            PREV="0.0.0"
+          else
+            COMMITS=$(git log --pretty=format:"%H %s" "${LATEST_TAG}..HEAD")
+            PREV="${LATEST_TAG#v}"
+          fi
+
+          if [ -z "$COMMITS" ]; then
+            echo "No new commits since $LATEST_TAG — skipping release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+          # ── Determine semver bump ──────────────────────────────────────────
+          BUMP="patch"
+          while IFS= read -r line; do
+            MSG="${line#* }"
+            if echo "$MSG" | grep -qE "(BREAKING CHANGE|!:)"; then
+              BUMP="major"; break
+            elif echo "$MSG" | grep -qE "^feat(\(.+\))?:"; then
+              BUMP="minor"
+            fi
+          done <<< "$COMMITS"
+
+          # ── Calculate new version ─────────────────────────────────────────
+          IFS='.' read -r MAJ MIN PAT <<< "$PREV"
+          MAJ=${MAJ:-0}; MIN=${MIN:-0}; PAT=${PAT:-0}
+
+          case $BUMP in
+            major) MAJ=$((MAJ+1)); MIN=0;       PAT=0 ;;
+            minor) MIN=$((MIN+1));               PAT=0 ;;
+            patch)                               PAT=$((PAT+1)) ;;
+          esac
+
+          NEW_VERSION="v${MAJ}.${MIN}.${PAT}"
+          echo "Bump type: $BUMP  |  $PREV → $NEW_VERSION"
+          echo "new_version=$NEW_VERSION"   >> "$GITHUB_OUTPUT"
+          echo "latest_tag=$LATEST_TAG"     >> "$GITHUB_OUTPUT"
+
+          # ── Build changelog sections ──────────────────────────────────────
+          BREAKING=""; FEATURES=""; FIXES=""; PERF=""; OTHERS=""
+
+          while IFS= read -r line; do
+            HASH="${line%% *}"
+            MSG="${line#* }"
+            REF="${HASH:0:7}"
+
+            if   echo "$MSG" | grep -qE "(BREAKING CHANGE|!:)"; then BREAKING="${BREAKING}- \`${REF}\` ${MSG}\n"
+            elif echo "$MSG" | grep -qE "^feat(\(.+\))?:";      then FEATURES="${FEATURES}- \`${REF}\` ${MSG}\n"
+            elif echo "$MSG" | grep -qE "^fix(\(.+\))?:";       then FIXES="${FIXES}- \`${REF}\` ${MSG}\n"
+            elif echo "$MSG" | grep -qE "^perf(\(.+\))?:";      then PERF="${PERF}- \`${REF}\` ${MSG}\n"
+            else                                                      OTHERS="${OTHERS}- \`${REF}\` ${MSG}\n"
+            fi
+          done <<< "$COMMITS"
+
+          # ── Compose release notes ─────────────────────────────────────────
+          NOTES=""
+          [ -n "$BREAKING" ] && NOTES="${NOTES}### ⚠️ Breaking Changes\n${BREAKING}\n"
+          [ -n "$FEATURES" ] && NOTES="${NOTES}### Features\n${FEATURES}\n"
+          [ -n "$FIXES"    ] && NOTES="${NOTES}### Bug Fixes\n${FIXES}\n"
+          [ -n "$PERF"     ] && NOTES="${NOTES}### Performance\n${PERF}\n"
+          [ -n "$OTHERS"   ] && NOTES="${NOTES}### Other Changes\n${OTHERS}\n"
+
+          COMPARE_BASE="${LATEST_TAG:-$(git rev-list --max-parents=0 HEAD)}"
+          NOTES="${NOTES}**Full diff**: https://github.com/${{ github.repository }}/compare/${COMPARE_BASE}...${NEW_VERSION}"
+
+          # Save notes to file so multiline is safe in subsequent steps
+          printf '%b' "$NOTES" > /tmp/release_notes.md
+          echo "Release notes preview:"
+          cat /tmp/release_notes.md
+
+      - name: Update CHANGELOG.md
+        if: steps.versioning.outputs.skip == 'false'
+        run: |
+          NEW_VERSION="${{ steps.versioning.outputs.new_version }}"
+          DATE=$(date +%Y-%m-%d)
+          HEADER="## [${NEW_VERSION}] — ${DATE}"
+
+          ENTRY="${HEADER}\n\n$(cat /tmp/release_notes.md)\n\n---\n\n"
+
+          if [ -f CHANGELOG.md ]; then
+            # Insert after the first line (# Changelog heading)
+            HEAD=$(head -1 CHANGELOG.md)
+            TAIL=$(tail -n +2 CHANGELOG.md)
+            printf '%s\n\n%b%s' "$HEAD" "$ENTRY" "$TAIL" > CHANGELOG.md
+          else
+            printf '# Changelog\n\n%b' "$ENTRY" > CHANGELOG.md
+          fi
+
+      - name: Commit, tag and push
+        if: steps.versioning.outputs.skip == 'false'
+        run: |
+          NEW_VERSION="${{ steps.versioning.outputs.new_version }}"
+          git add CHANGELOG.md
+          git commit -m "chore(release): ${NEW_VERSION} [skip ci]"
+          git tag -a "$NEW_VERSION" -m "Release ${NEW_VERSION}"
+          git push origin main --follow-tags
+
+      - name: Create GitHub Release
+        if: steps.versioning.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_VERSION="${{ steps.versioning.outputs.new_version }}"
+          LATEST_TAG="${{ steps.versioning.outputs.latest_tag }}"
+
+          # Mark as pre-release if version is 0.x.x
+          MAJOR=$(echo "$NEW_VERSION" | cut -d. -f1 | tr -d 'v')
+          PRERELEASE_FLAG=""
+          [ "$MAJOR" = "0" ] && PRERELEASE_FLAG="--prerelease"
+
+          gh release create "$NEW_VERSION" \
+            --title "Release $NEW_VERSION" \
+            --notes-file /tmp/release_notes.md \
+            $PRERELEASE_FLAG
+
+          echo "Released $NEW_VERSION"

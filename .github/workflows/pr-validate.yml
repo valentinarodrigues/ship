@@ -1,0 +1,75 @@
+name: Validate PR
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  validate-title:
+    name: Conventional Commit Title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title format
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          PATTERN="^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?(!)?: .{1,100}$"
+
+          if echo "$PR_TITLE" | grep -qE "$PATTERN"; then
+            echo "PR title is valid: $PR_TITLE"
+          else
+            echo "ERROR: PR title does not follow conventional commits format."
+            echo ""
+            echo "Required format:  <type>(<scope>): <short description>"
+            echo ""
+            echo "Valid types:      feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+            echo "Breaking change:  append ! before the colon  e.g. feat!: drop support for Node 16"
+            echo ""
+            echo "Examples:"
+            echo "  feat(auth): add OAuth2 login"
+            echo "  fix(api): handle null response from payment service"
+            echo "  chore: update dependencies"
+            echo "  feat!: redesign public API"
+            exit 1
+          fi
+
+  validate-description:
+    name: PR Description Not Empty
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check description length
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          BODY_LEN=${#PR_BODY}
+          if [ "$BODY_LEN" -lt 20 ]; then
+            echo "ERROR: PR description is too short (got $BODY_LEN chars, need at least 20)."
+            echo "Please fill in the PR template."
+            exit 1
+          fi
+          echo "PR description looks good ($BODY_LEN chars)."
+
+  validate-branch-name:
+    name: Branch Name Convention
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check branch name
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          # Allow: feat/..., fix/..., chore/..., hotfix/..., release/..., docs/...
+          PATTERN="^(feat|fix|chore|hotfix|release|docs|refactor|test|ci)/[a-z0-9._-]+$"
+
+          if echo "$BRANCH" | grep -qE "$PATTERN"; then
+            echo "Branch name is valid: $BRANCH"
+          else
+            echo "ERROR: Branch name does not follow the naming convention."
+            echo ""
+            echo "Required format:  <type>/<description-in-kebab-case>"
+            echo ""
+            echo "Examples:"
+            echo "  feat/add-oauth-login"
+            echo "  fix/null-payment-response"
+            echo "  chore/update-deps"
+            exit 1
+          fi

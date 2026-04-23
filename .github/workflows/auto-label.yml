@@ -1,0 +1,77 @@
+name: Auto Label PR
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  label:
+    name: Label by files and commit type
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure labels exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          declare -A LABEL_COLORS=(
+            ["feature"]="0075ca"
+            ["bug"]="d73a4a"
+            ["documentation"]="0075ca"
+            ["chore"]="e4e669"
+            ["performance"]="e4e669"
+            ["dependencies"]="0366d6"
+            ["breaking-change"]="b60205"
+            ["frontend"]="7057ff"
+            ["backend"]="008672"
+            ["devops"]="f9d0c4"
+            ["tests"]="bfd4f2"
+          )
+
+          for LABEL in "${!LABEL_COLORS[@]}"; do
+            COLOR="${LABEL_COLORS[$LABEL]}"
+            gh label create "$LABEL" --color "$COLOR" --force 2>/dev/null || true
+          done
+
+      - name: Apply labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          CHANGED=$(gh pr diff "$PR_NUMBER" --name-only 2>/dev/null || git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          LABELS=""
+
+          add_label() { LABELS="$LABELS $1"; }
+
+          # File-based labels
+          echo "$CHANGED" | grep -qE "^frontend/|\.tsx?$|\.jsx?$|\.css$|\.scss$|\.vue$" && add_label "frontend"
+          echo "$CHANGED" | grep -qE "^backend/|\.py$|lambda|handler\.py|routes\." && add_label "backend"
+          echo "$CHANGED" | grep -qE "^\.github/|Makefile|Dockerfile|docker-compose|\.tf$|cdk\." && add_label "devops"
+          echo "$CHANGED" | grep -qE "test|spec|__tests__|_test\." && add_label "tests"
+          echo "$CHANGED" | grep -qE "\.md$|docs/" && add_label "documentation"
+          echo "$CHANGED" | grep -qE "package\.json|requirements\.txt|poetry\.lock|yarn\.lock|Cargo\.toml|go\.mod" && add_label "dependencies"
+
+          # Commit-type labels from PR title
+          echo "$PR_TITLE" | grep -qE "^feat"     && add_label "feature"
+          echo "$PR_TITLE" | grep -qE "^fix"      && add_label "bug"
+          echo "$PR_TITLE" | grep -qE "^(chore|ci|build)" && add_label "chore"
+          echo "$PR_TITLE" | grep -qE "^docs"     && add_label "documentation"
+          echo "$PR_TITLE" | grep -qE "^perf"     && add_label "performance"
+          echo "$PR_TITLE" | grep -qE "!:"        && add_label "breaking-change"
+
+          # Deduplicate and apply
+          UNIQUE=$(echo "$LABELS" | tr ' ' '\n' | sort -u | grep -v '^$' | paste -sd ',' -)
+          if [ -n "$UNIQUE" ]; then
+            echo "Applying labels: $UNIQUE"
+            gh pr edit "$PR_NUMBER" --add-label "$UNIQUE"
+          else
+            echo "No labels matched."
+          fi
