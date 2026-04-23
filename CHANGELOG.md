@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.4.0] — 2026-04-23
+
+### Features
+- `ed5af29` feat: replace copilot extension with AI PR assistant workflow
+
+**Full diff**: https://github.com/valentinarodrigues/ship/compare/v0.3.0...v0.4.0
+
+---
+
+
 ## [v0.3.0] — 2026-04-23
 
 ### Features
